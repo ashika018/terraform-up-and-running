@@ -2,8 +2,23 @@ provider "aws" {
   region = "ap-northeast-1"
   profile = "ashika018"
 }
+
+# .tfstateファイルの保存場所をS3に設定
+terraform {
+  backend "s3" {
+    region = "ap-northeast-1"
+    profile = "ashika018"
+
+    bucket = "terraform-state-ashika018"
+    key = "stage/services/webserver-cluster/terraform.tfstate" # stateファイルの保存場所
+    # dynamodb_table = "terraform-locks-ashika018"
+    use_lockfile = true
+    encrypt = true
+  }
+}
+
 # ---------------------------
-# VPCとSubnet
+# 他で構築（もしくはデフォルトで構築）したもののデータを取得
 # ---------------------------
 data "aws_vpc" "default" {
     default = true
@@ -16,6 +31,18 @@ data "aws_subnets" "default" {
     }
 }
 
+data "terraform_remote_state" "db" {
+  backend = "s3"
+
+  config = {
+    region = "ap-northeast-1"
+    profile = "ashika018"
+
+    bucket = "terraform-state-ashika018"
+    key = "stage/data-stores/mysql/terraform.tfstate"
+  }
+}
+
 # ---------------------------
 # EC2
 # ---------------------------
@@ -25,12 +52,11 @@ resource "aws_launch_template" "example" {
   instance_type = "t2.micro"
   vpc_security_group_ids = [ aws_security_group.instance.id ]
 
-  user_data = base64encode(<<-EOF
-              #!/bin/bash
-              echo "Hello, World" > index.html
-              nohup busybox httpd -f -p ${var.server_port} &
-              EOF
-  )
+  user_data = base64encode(templatefile("user-data.sh", {
+    server_port = var.server_port
+    db_address = data.terraform_remote_state.db.outputs.address
+    db_port = data.terraform_remote_state.db.outputs.port
+  }))
 
   # Autoscaling Groupがある起動設定を使った場合に必須
   lifecycle {
